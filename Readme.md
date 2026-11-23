@@ -49,6 +49,16 @@ To use the UI with the Nintendo switch port of Cave Story, you need to put a dum
 
 If the command line is used to load in the core instead, both of these prerequisites can be ignored.
 
+### Rendering frame rate
+
+The **Rendering frame rate (FPS)** core option selects how often the frontend calls the core to render, from 50 FPS (the default) through 240 FPS. Changes apply without restarting when the frontend accepts live timing updates. Rejected updates retain the previous rate.
+
+Rendering is separate from the engine's simulation ticks: selecting 120 FPS does not speed up 50 Hz gameplay. Enable **Motion interpolation** in the game's graphics settings to smooth motion between simulation ticks. The game's 50/60 Hz timing setting still controls simulation timing independently.
+
+Configure VSync and VRR in the frontend. The native game's Uncapped/VSync/VRR graphics choices do not control libretro presentation, and their internal draw limiter is bypassed so it cannot restrict the selected rendering rate. The display, frontend, and available rendering performance determine the achievable rate.
+
+The frame-time callback reference follows the selected rendering period, including during fast-forward (20,000 microseconds at 50 FPS, approximately 8,333 at 120 FPS).
+
 ### Building
 
 Simply run the `cargo build` command from within the drsretroarch subdirectory to build the core for the parent system. To build it for other systems, the process is no different than building a generic library. (For instance, for android, you'd use [cargo ndk](https://github.com/bbqsrc/cargo-ndk), or for iOS, [cargo lipo](https://github.com/TimNN/cargo-lipo).)

@@ -16,6 +16,7 @@ use doukutsu_rs::framework::backend_libretro::{LibretroEventLoop, LibretroBacken
 use doukutsu_rs::framework::keyboard::ScanCode;
 use doukutsu_rs::framework::gamepad::{Button, Axis};
 use doukutsu_rs::framework::context::Context;
+use doukutsu_rs::framework::graphics::{self, VSyncMode};
 use doukutsu_rs::game::Game;
 use doukutsu_rs::scene::title_scene;
 use doukutsu_rs::game::shared_game_state::SharedGameState;
@@ -85,6 +86,21 @@ fn parse_numeric(opt: &str) -> Result<u32, <u32 as FromStr>::Err> {
 
     num.parse()
 }
+
+fn frame_time_reference(frame_rate: u32) -> i64
+{
+    (1_000_000.0 / frame_rate as f64).round() as i64
+}
+
+fn parse_rendering_frame_rate(opt: &str) -> Result<u32, ()>
+{
+    match opt.parse::<u32>().map_err(|_| ())?
+    {
+        rate @ (50 | 60 | 75 | 90 | 100 | 120 | 144 | 165 | 180 | 200 | 240) => Ok(rate),
+        _ => Err(()),
+    }
+}
+
 fn parse_ratio(opt: &str) -> Result<(u32,u32), ()> {
 
     let num = opt.trim_matches(|c: char| !c.is_numeric()); //trims down to ratio (16:9)
@@ -107,6 +123,8 @@ fn parse_bool(opt: &str) -> Result<bool, ()> {
 //macro to build settings for the setting menu
 libretro_variables!(
     struct CoreVariables (prefix = "d-rs") {
+        rendering_frame_rate: u32, parse_rendering_frame_rate
+            => "Rendering frame rate (FPS); 50|60|75|90|100|120|144|165|180|200|240",
         internal_upscale_factor: u32, parse_numeric
             => "Internal upscaling factor; \
                 2x (CS+, default)|1x (freeware, fastest)|3x (smoother motion)|4x (smoothest motion)",
@@ -143,6 +161,7 @@ struct Core<'a>  {
     pub context: Pin<Box<Context>>,	
     screen_width: u32,
     screen_height: u32,
+    rendering_frame_rate: u32,
 
     rumble_enabled: bool,
     _async_audio_enabled: bool, //true if async audio has been enabled
@@ -189,8 +208,8 @@ impl<'a>  Core<'a>  {
 
         }
 
-        //the value of 50 here is arbitrary (in micros). Bigger numbers mean the mainloop will be called less often.
-        if !libretro::register_frame_time_callback(50) {
+        let rendering_frame_rate = CoreVariables::rendering_frame_rate();
+        if !libretro::register_frame_time_callback(frame_time_reference(rendering_frame_rate)) {
             //log::warn!("Failed to init delta frame counter");
             rlog::log(Level::Error, "Failed to init delta frame counter");
             return Err(());
@@ -296,6 +315,7 @@ impl<'a>  Core<'a>  {
             game,
             screen_height: initial_height,
             screen_width: initial_width,
+            rendering_frame_rate,
             rumble_enabled,
             _async_audio_enabled: async_audio_enabled,
             delta_time: 0,
@@ -421,7 +441,7 @@ impl<'a>  Core<'a>  {
                 aspect_ratio: (max_width as f32)/(max_height as f32),
             },
             timing: libretro::SystemTiming {
-                fps: 50 as f64,
+                fps: self.rendering_frame_rate as f64,
                 sample_rate: 44_100. //samples per second
             }
         }
@@ -429,6 +449,30 @@ impl<'a>  Core<'a>  {
 
     }
 
+
+    fn set_rendering_frame_rate(&mut self)
+    {
+        let requested = CoreVariables::rendering_frame_rate();
+        if requested == self.rendering_frame_rate
+        {
+            return;
+        }
+        if !libretro::register_frame_time_callback(frame_time_reference(requested))
+        {
+            rlog::log(Level::Warn, "Frontend rejected the rendering frame-time callback");
+            return;
+        }
+
+        let previous = self.rendering_frame_rate;
+        self.rendering_frame_rate = requested;
+        // Timing changes must be announced during retro_run, not just through geometry.
+        if !unsafe { libretro::set_system_av_info(&self.core_av_info()) }
+        {
+            self.rendering_frame_rate = previous;
+            libretro::register_frame_time_callback(frame_time_reference(previous));
+            rlog::log(Level::Warn, "Frontend rejected the rendering frame rate; keeping the previous rate");
+        }
+    }
 
     fn set_resolution(&mut self) {
 
@@ -466,6 +510,8 @@ impl<'a>  libretro::Context  for Core<'a>  {
         //self.poll_touch();
         //self.poll_keys();
 
+        // The frontend owns presentation pacing; native VRR modes would skip interpolated frames.
+        let _ = graphics::set_vsync_mode(&mut self.context, VSyncMode::Uncapped);
         self.event_loop.update(self.state_ref, self.game.as_mut().get_mut(), &mut self.context, self.delta_time as u64);
         gl_frame_done(self.screen_width, self.screen_height);
 
@@ -494,6 +540,7 @@ impl<'a>  libretro::Context  for Core<'a>  {
         //let internal_upscale_factor = CoreVariables::internal_upscale_factor();
         //let screen_ratio = CoreVariables::screen_ratio();
         self.set_resolution();
+        self.set_rendering_frame_rate();
 
         self.state_ref.settings.god_mode = CoreVariables::god_mode();
         self.state_ref.settings.fps_counter = CoreVariables::show_fps();
